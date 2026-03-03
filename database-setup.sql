@@ -43,3 +43,54 @@ CREATE TRIGGER update_profiles_updated_at
   BEFORE UPDATE ON profiles
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
+
+-- Create notes table
+CREATE TABLE IF NOT EXISTS notes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  is_public BOOLEAN DEFAULT false,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Enable Row Level Security on notes
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Users can view their own notes
+CREATE POLICY "Users can view their own notes"
+  ON notes
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+-- Policy: Anyone can view public notes (including anonymous users)
+CREATE POLICY "Anyone can view public notes"
+  ON notes
+  FOR SELECT
+  USING (is_public = true);
+
+-- Policy: Users can insert their own notes
+CREATE POLICY "Users can insert their own notes"
+  ON notes
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+-- Policy: Users can update their own notes
+CREATE POLICY "Users can update their own notes"
+  ON notes
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- Policy: Users can delete their own notes
+CREATE POLICY "Users can delete their own notes"
+  ON notes
+  FOR DELETE
+  USING (auth.uid() = user_id);
+
+-- Create trigger to automatically update updated_at for notes
+CREATE TRIGGER update_notes_updated_at
+  BEFORE UPDATE ON notes
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
