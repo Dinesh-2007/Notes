@@ -12,23 +12,22 @@ function PublicNote() {
   }, []);
 
   const fetchNote = async () => {
-    const { data, error } = await supabase
-      .from("notes")
-      .select("*")
-      .eq("id", id)
-      .single();
+    // Resolve via secure function so only the holder of the share token can fetch
+    const { data, error } = await supabase.rpc("get_shared_note", {
+      p_token: id,
+    });
 
-    if (!error) {
-      setNote(data);
-    }
+    // rpc returns array when function returns SETOF
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!error && row) setNote(row);
 
     setLoading(false);
   };
 
   if (loading) return <p style={{ padding: "40px" }}>Loading...</p>;
 
-  if (!note || !note.is_public)
-    return <p style={{ padding: "40px" }}>This note is private.</p>;
+  if (!note)
+    return <p style={{ padding: "40px" }}>This note is private or link is invalid.</p>;
 
   return (
     <div style={{ padding: "40px" }}>

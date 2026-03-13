@@ -50,10 +50,14 @@ CREATE TABLE IF NOT EXISTS notes (
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   title TEXT NOT NULL,
   content TEXT NOT NULL,
-  is_public BOOLEAN DEFAULT false,
+  is_public BOOLEAN DEFAULT false, -- kept for backward compatibility but no longer used for access
+  share_token UUID DEFAULT gen_random_uuid() UNIQUE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Helpful index for quick lookup by share token
+CREATE INDEX IF NOT EXISTS notes_share_token_idx ON notes (share_token);
 
 -- Enable Row Level Security on notes
 ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
@@ -63,12 +67,6 @@ CREATE POLICY "Users can view their own notes"
   ON notes
   FOR SELECT
   USING (auth.uid() = user_id);
-
--- Policy: Anyone can view public notes (including anonymous users)
-CREATE POLICY "Anyone can view public notes"
-  ON notes
-  FOR SELECT
-  USING (is_public = true);
 
 -- Policy: Users can insert their own notes
 CREATE POLICY "Users can insert their own notes"
@@ -94,3 +92,18 @@ CREATE TRIGGER update_notes_updated_at
   BEFORE UPDATE ON notes
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
+
+-- Secure function to fetch a single note by share_token (used for public sharing)
+CREATE OR REPLACE FUNCTION get_shared_note(p_token uuid)
+RETURNS SETOF notes
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT *
+  FROM notes
+  WHERE share_token = p_token
+     OR id = p_token -- allow old links that used the primary id
+  LIMIT 1;
+$$ LANGUAGE sql STABLE;
+
+GRANT EXECUTE ON FUNCTION get_shared_note(uuid) TO anon, authenticated;

@@ -4,7 +4,6 @@ import { useNavigate } from "react-router-dom";
 import ThemeToggle from "../components/ThemeToggle";
 import "./Dashboard.css";
 
-
 const defaultAvatars = [
   "/avatars/avatar1.png",
   "/avatars/avatar2.png",
@@ -32,7 +31,6 @@ function Dashboard({ session, theme, setTheme }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [userAvatar, setUserAvatar] = useState("/avatars/avatar1.png");
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
-  const [isPublic, setIsPublic] = useState(false);
   const [copiedNoteId, setCopiedNoteId] = useState(null);
   const filteredNotes = notes.filter((note) => {
     if (!searchTerm.trim()) return true;
@@ -72,6 +70,7 @@ function Dashboard({ session, theme, setTheme }) {
     const { data, error } = await supabase
       .from("notes")
       .select("*")
+      .eq("user_id", session.user.id)
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -122,7 +121,6 @@ function Dashboard({ session, theme, setTheme }) {
         .update({
         title,
         content,
-        is_public: isPublic,
         updated_at: new Date().toISOString(),
     })
     .eq("id", editingId);
@@ -132,7 +130,6 @@ function Dashboard({ session, theme, setTheme }) {
       } else {
         setTitle("");
         setContent("");
-        setIsPublic(false);
         setEditingId(null);
         fetchNotes();
       }
@@ -143,7 +140,6 @@ function Dashboard({ session, theme, setTheme }) {
           title,
           content,
           user_id: session.user.id,
-          is_public: isPublic,
         },
       ]);
 
@@ -152,7 +148,6 @@ function Dashboard({ session, theme, setTheme }) {
       } else {
         setTitle("");
         setContent("");
-        setIsPublic(false);
         fetchNotes();
       }
     }
@@ -162,7 +157,6 @@ function Dashboard({ session, theme, setTheme }) {
   const editNote = (note) => {
     setTitle(note.title);
     setContent(note.content);
-    setIsPublic(note.is_public || false);
     setEditingId(note.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -171,7 +165,6 @@ function Dashboard({ session, theme, setTheme }) {
   const cancelEdit = () => {
     setTitle("");
     setContent("");
-    setIsPublic(false);
     setEditingId(null);
   };
 
@@ -185,26 +178,89 @@ function Dashboard({ session, theme, setTheme }) {
 
   const cancelDelete = () => setConfirmDeleteId(null);
 
-  // Toggle note public/private
-  const togglePublic = async (noteId, currentStatus) => {
-    const { error } = await supabase
-      .from("notes")
-      .update({ is_public: !currentStatus })
-      .eq("id", noteId);
+  // Generate a v4-ish UUID for share tokens (fallback when crypto.randomUUID is missing)
+  const createShareToken = () => {
+    const cryptoObj = typeof globalThis !== "undefined" ? globalThis.crypto : null;
 
-    if (!error) {
-      fetchNotes();
-    } else {
-      alert("Failed to update note status");
+    if (typeof cryptoObj?.randomUUID === "function") {
+      return cryptoObj.randomUUID();
     }
+
+    if (cryptoObj?.getRandomValues) {
+      const bytes = cryptoObj.getRandomValues(new Uint8Array(16));
+      bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+      bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant
+      const toHex = (b) => b.toString(16).padStart(2, "0");
+      return (
+        toHex(bytes[0]) +
+        toHex(bytes[1]) +
+        toHex(bytes[2]) +
+        toHex(bytes[3]) +
+        "-" +
+        toHex(bytes[4]) +
+        toHex(bytes[5]) +
+        "-" +
+        toHex(bytes[6]) +
+        toHex(bytes[7]) +
+        "-" +
+        toHex(bytes[8]) +
+        toHex(bytes[9]) +
+        "-" +
+        toHex(bytes[10]) +
+        toHex(bytes[11]) +
+        toHex(bytes[12]) +
+        toHex(bytes[13]) +
+        toHex(bytes[14]) +
+        toHex(bytes[15])
+      );
+    }
+
+    // Ultra-fallback: Math.random()-based UUID shape (good enough for local dev)
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = Math.floor(Math.random() * 16);
+      const v = c === "x" ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
   };
 
-  // Copy share link
-  const copyShareLink = (noteId) => {
-    const link = `${window.location.origin}/note/${noteId}`;
-    navigator.clipboard.writeText(link);
-    setCopiedNoteId(noteId);
-    setTimeout(() => setCopiedNoteId(null), 2000);
+  // Ensure a note has a share_token; create and persist one if missing
+  const ensureShareToken = async (note) => {
+    if (note.share_token) return note.share_token;
+
+    const newToken = createShareToken();
+    const { data, error } = await supabase
+      .from("notes")
+      .update({ share_token: newToken })
+      .eq("id", note.id)
+      .select("share_token")
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    // keep local state in sync so subsequent copies reuse the same token
+    setNotes((prev) =>
+      prev.map((n) =>
+        n.id === note.id ? { ...n, share_token: data.share_token } : n
+      )
+    );
+
+    return data.share_token;
+  };
+
+  // Copy share link, guaranteeing a valid share_token exists first
+  const copyShareLink = async (note) => {
+    try {
+      const shareId = await ensureShareToken(note);
+      const link = `${window.location.origin}/note/${shareId}`;
+      await navigator.clipboard.writeText(link);
+      setCopiedNoteId(note.id);
+      setTimeout(() => setCopiedNoteId(null), 2000);
+    } catch (err) {
+      console.error("Error generating share link:", err);
+      alert("Could not create a shareable link. Please try again.");
+    }
   };
 
   // Logout
@@ -259,18 +315,6 @@ function Dashboard({ session, theme, setTheme }) {
             rows="6"
           />
 
-          <div style={{ marginBottom: "15px", display: "flex", alignItems: "center", gap: "8px" }}>
-            <input
-              type="checkbox"
-              id="isPublic"
-              checked={isPublic}
-              onChange={(e) => setIsPublic(e.target.checked)}
-            />
-            <label htmlFor="isPublic" style={{ cursor: "pointer" }}>
-              🌐 Make this note publicly shareable
-            </label>
-          </div>
-
           <div className="form-actions">
             <button className="btn-primary" onClick={saveNote}>
               {editingId ? "Update Note" : "Add Note"}
@@ -310,15 +354,6 @@ function Dashboard({ session, theme, setTheme }) {
     <div key={note.id} className="note-card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
         <h3 className="note-title">{note.title}</h3>
-        <span style={{ 
-          fontSize: "12px", 
-          padding: "2px 8px", 
-          borderRadius: "4px",
-          backgroundColor: note.is_public ? "#4caf50" : "#999",
-          color: "white"
-        }}>
-          {note.is_public ? "🌐 Public" : "🔒 Private"}
-        </span>
       </div>
 
       <small className="note-timestamp">
@@ -335,21 +370,11 @@ function Dashboard({ session, theme, setTheme }) {
 
         <button
           className="btn-secondary"
-          onClick={() => togglePublic(note.id, note.is_public)}
-          title={note.is_public ? "Make private" : "Make public"}
+          onClick={() => copyShareLink(note)}
+          title="Copy share link"
         >
-          {note.is_public ? "🔒 Private" : "🌐 Share"}
+          {copiedNoteId === note.id ? "✓ Copied!" : "🔗 Copy Link"}
         </button>
-
-        {note.is_public && (
-          <button
-            className="btn-secondary"
-            onClick={() => copyShareLink(note.id)}
-            title="Copy share link"
-          >
-            {copiedNoteId === note.id ? "✓ Copied!" : "🔗 Copy Link"}
-          </button>
-        )}
 
         <button
           className="btn-delete"
